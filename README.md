@@ -1,53 +1,60 @@
-# Claude Builders Bounty 🤖
+# SKILL: Generate Changelog from Git History
 
-> A community bounty board for Claude Code builders.
+Generates a structured `CHANGELOG.md` from a project's git commit history.
 
-Building with Claude Code? Have tasks to delegate?
-Want to get paid for contributing to AI projects?
-You're in the right place.
+## Quick Start (3 steps)
 
----
+```bash
+# 1. Save the script
+curl -fsSL https://raw.githubusercontent.com/D2758695161/claude-builders-bounty/main/changelog.sh -o changelog.sh
+chmod +x changelog.sh
 
-## How it works
+# 2. Make sure your project has annotated tags
+git tag -a v1.0.0 -m "Release v1.0.0"
 
-**To post a bounty**
-1. Open a GitHub issue with a clear description and acceptance criteria
-2. Comment `/opire create $XXX` in the issue to set the reward
-3. Share the link — contributors will find it
+# 3. Run
+./changelog.sh
+```
 
-**To claim a bounty**
-1. Browse the open issues below
-2. Comment `/opire try` in the issue you want to work on
-3. Submit a PR — payment is automatic on merge ✅
+## Alternative: Use as Claude Code SKILL
 
----
+1. Save `SKILL.md` and `changelog.sh` in your project root
+2. Ask: `/generate-changelog`
+3. Done — `CHANGELOG.md` is updated
 
-## Active Bounties
+## Features
 
-| # | Task | Amount | Status |
-|---|------|--------|--------|
-| [#1](../../issues/1) | SKILL: Generate a CHANGELOG from git history | $50 | 🟢 Open |
-| [#2](../../issues/2) | TEMPLATE: CLAUDE.md for a Next.js + SQLite project | $75 | 🟢 Open |
-| [#3](../../issues/3) | HOOK: Block destructive bash commands in Claude Code | $100 | 🟢 Open |
-| [#4](../../issues/4) | AGENT: PR reviewer with structured Markdown output | $150 | 🟢 Open |
-| [#5](../../issues/5) | WORKFLOW: n8n + Claude API — automated weekly dev summary | $200 | 🟢 Open |
+- Auto-categorizes commits into Added / Fixed / Changed / Removed / Security
+- Supports conventional commit prefixes: `feat:`, `fix:`, `chore:`, `refactor:`, etc.
+- Detects `BREAKING CHANGE:` and marks them appropriately
+- Falls back to keyword analysis for non-standard commit messages
+- Prepends new entries to existing `CHANGELOG.md` (never overwrites history)
+- Works on any language — detects English and Chinese keywords
 
----
+## Requirements
 
-## Rules
+- Git
+- Bash 4+
+- standard POSIX tools (`grep`, `awk`, `sed`)
 
-- Tasks must be related to Claude Code or AI tooling
-- Every issue must have clear acceptance criteria before a bounty is activated
-- Payment is handled by [Opire](https://opire.dev) (Stripe)
-- Quality over speed — a solid PR beats a fast one
+## Sample Output
 
----
+```markdown
+## [v1.2.0] - 2026-03-27
 
-## Community
+### Added
+- feat: add user authentication
+- new endpoint for listing transactions
 
-- 🐦 X: [@ClaudeBounty](https://x.com/ClaudeBounty)
-- 📧 Contact: claudebounty@gmail.com
+### Fixed
+- fix: resolve memory leak in cache
+- hotfix: prevent nil pointer in parser
 
----
+### Changed
+- refactor: migrate to new database driver
+- docs: update API documentation
+```
 
-*Started by the Claude builder community · March 2026 · MIT License*
+## Cl
+
+oses claude-builders-bounty#1
