@@ -1,104 +1,104 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Generate CHANGELOG.md from git history
-# Usage: bash changelog.sh [--since <tag|commit>] [--output <file>]
-# =============================================================================
+#────────────────────────────────────────────────────────────────────────────
+# changelog.sh — Generate CHANGELOG.md from Git History
+#────────────────────────────────────────────────────────────────────────────
+# Usage: bash changelog.sh [--repo /path/to/repo] [--output CHANGELOG.md]
+#        ./changelog.sh                     # auto-detect repo
+#────────────────────────────────────────────────────────────────────────────
+
 set -euo pipefail
 
-SINCE="${CHANGELOG_SINCE:-$(git describe --tags --abbrev=0 2>/dev/null || echo "")}"
-OUTPUT="${CHANGELOG_OUTPUT:-CHANGELOG.md}"
-UNRELEASED="${CHANGELOG_UNRELEASED:-true}"
+REPO_DIR="${1:-.}"
+OUTPUT_FILE="${2:-CHANGELOG.md}"
 
-# Parse args
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --since) SINCE="$2"; shift 2 ;;
-        --output) OUTPUT="$2"; shift 2 ;;
-        *) shift ;;
-    esac
-done
+cd "$REPO_DIR"
 
-# Get commits
-if [[ -n "$SINCE" ]]; then
-    commits=$(git log "$SINCE"..HEAD --format="%s" 2>/dev/null || echo "")
+# Detect last tag
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+SINCE_FLAG="--since=$(git log --reverse --format=%ai | head -1 2>/dev/null || echo "")"
+
+if [[ -n "$LAST_TAG" ]]; then
+  COMMITS=$(git log "$LAST_TAG..HEAD" --format="%H|%s|%an|%ad" --date=short 2>/dev/null || echo "")
+  TAG_LINE="## [$LAST_TAG]"
+  SINCE_REF="since $LAST_TAG"
 else
-    commits=$(git log --format="%s" 2>/dev/null || echo "")
+  COMMITS=$(git log --format="%H|%s|%an|%ad" -50 2>/dev/null || echo "")
+  TAG_LINE="# Changelog"
+  SINCE_REF="last 50 commits"
 fi
 
-# Categorize
-added=(); fixed=(); changed=(); removed=(); deprecated=(); breaking=()
+# Category mapping (conventional commits)
+declare -A CATEGORIES=(
+  ["feat"]="Added"
+  ["fix"]="Fixed"
+  ["perf"]="Improved"
+  ["refactor"]="Changed"
+  ["docs"]="Changed"
+  ["test"]="Changed"
+  ["chore"]="Changed"
+  ["ci"]="Changed"
+  ["build"]="Changed"
+  ["BREAKING CHANGE"]="Removed"
+)
 
-while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    lower=$(echo "$line" | tr '[:upper:]' '[:lower:]')
-    
-    if [[ "$lower" == *"breaking"* ]]; then
-        breaking+=("$line")
-    elif [[ "$lower" == "feat:"* || "$lower" == "feat("* ]]; then
-        added+=("$line")
-    elif [[ "$lower" == "fix:"* || "$lower" == "fix("* ]]; then
-        fixed+=("$line")
-    elif [[ "$lower" == "deprecate"* ]]; then
-        deprecated+=("$line")
-    elif [[ "$lower" == "remove:"* || "$lower" == "delete:"* || "$lower" == *"removed"* ]]; then
-        removed+=("$line")
-    else
-        changed+=("$line")
-    fi
-done <<< "$commits"
+# Build sections
+declare -A sections=(
+  ["Added"]=""
+  ["Fixed"]=""
+  ["Improved"]=""
+  ["Changed"]=""
+  ["Removed"]=""
+)
 
-# Generate markdown
+add_to_section() {
+  local cat="$1"
+  local msg="$2"
+  local hash="$3"
+  local author="$4"
+  
+  local formatted="- $msg *([\`$hash\`])*"
+  sections["$cat"]="${sections[$cat]}\n$formatted"
+}
+
+while IFS='|' read -r hash msg author date; do
+  [[ -z "$hash" ]] && continue
+  
+  # conventional commit prefix
+  if [[ "$msg" =~ ^([a-zA-Z]+)(\(.+\))?:\ +(.*) ]]; then
+    prefix="${BASH_REMATCH[1]}"
+    body="${BASH_REMATCH[3]}"
+  else
+    prefix="misc"
+    body="$msg"
+  fi
+  
+  # Map to category
+  cat="${CATEGORIES[$prefix]:-Changed}"
+  add_to_section "$cat" "$body" "${hash:0:7}" "$author"
+done <<< "$COMMITS"
+
+# Render
 {
-    echo "# Changelog"
-    echo ""
-    
-    if [[ "${#unreleased[@]}" -gt 0 && "$UNRELEASED" == "true" && -n "$(git log --format=%s 2>/dev/null)" ]]; then
-        echo "## [Unreleased]"
-        echo ""
+  echo "# Changelog"
+  echo ""
+  echo "*Auto-generated from git history — $SINCE_REF*"
+  echo ""
+  echo "Generated: $(date '+%Y-%m-%d')"
+  echo ""
+  
+  for cat in "Added" "Fixed" "Improved" "Changed" "Removed"; do
+    content="${sections[$cat]}"
+    if [[ -n "$content" ]]; then
+      echo "## $cat"
+      echo -e "$content"
+      echo ""
     fi
-    
-    if [[ ${#added[@]} -gt 0 ]]; then
-        echo "### Added"
-        echo ""
-        for c in "${added[@]}"; do echo "- ${c#feat: }"; done
-        echo ""
-    fi
-    
-    if [[ ${#fixed[@]} -gt 0 ]]; then
-        echo "### Fixed"
-        echo ""
-        for c in "${fixed[@]}"; do echo "- ${c#fix: }"; done
-        echo ""
-    fi
-    
-    if [[ ${#changed[@]} -gt 0 ]]; then
-        echo "### Changed"
-        echo ""
-        for c in "${changed[@]}"; do echo "- ${c#*:}"; done
-        echo ""
-    fi
-    
-    if [[ ${#removed[@]} -gt 0 ]]; then
-        echo "### Removed"
-        echo ""
-        for c in "${removed[@]}"; do echo "- ${c#remove: }"; done
-        echo ""
-    fi
-    
-    if [[ ${#deprecated[@]} -gt 0 ]]; then
-        echo "### Deprecated"
-        echo ""
-        for c in "${deprecated[@]}"; do echo "- ${c#deprecate: }"; done
-        echo ""
-    fi
-    
-    if [[ ${#breaking[@]} -gt 0 ]]; then
-        echo "### Breaking Changes"
-        echo ""
-        for c in "${breaking[@]}"; do echo "- ${c}"; done
-        echo ""
-    fi
+  done
+  
+  echo "---"
+  echo "*Generated by changelog.sh — Claude Code skill*"
+} > "$OUTPUT_FILE"
 
-} > "$OUTPUT"
-
-echo "Changelog written to $OUTPUT ($(wc -l < "$OUTPUT") lines)"
+echo "✓ CHANGELOG.md written — $(wc -l < "$OUTPUT_FILE") lines"
+echo "  ($(git rev-parse --short HEAD 2>/dev/null || echo 'local') @ $(date '+%Y-%m-%d %H:%M'))"
+cat "$OUTPUT_FILE"
