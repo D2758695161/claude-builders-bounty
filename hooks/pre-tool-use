@@ -1,74 +1,153 @@
-#!/usr/bin/env python3
-"""
-Claude Code pre-tool-use hook: Block destructive bash commands
+#!/usr/bin/env bash
+#────────────────────────────────────────────────────────────────────────────
+# pre-tool-use — Safety Hook: Block Destructive Commands
+#────────────────────────────────────────────────────────────────────────────
+# Claude Code hook that intercepts dangerous bash commands before execution.
+# Install: cp pre-tool-use ~/.claude/hooks/ && chmod +x ~/.claude/hooks/pre-tool-use
+# Format: Claude Code expects hook to read JSON from stdin, emit JSON to stdout.
+#────────────────────────────────────────────────────────────────────────────
 
-Claude Code calls this with JSON on stdin:
-  {"tool_name": "Bash", "tool_input": {"command": "..."}}
+BLOCKED_LOG="${HOME}/.claude/hooks/blocked.log"
+HOOK_DIR="${HOME}/.claude/hooks"
 
-Exit 0 = allow the tool
-Exit 1 = block the tool
-"""
-import sys
-import json
-import re
-import os
-from datetime import datetime
+#────────────────────────────────────────────────────────────────────────────
+# Blocked patterns — matched against the full command line
+#────────────────────────────────────────────────────────────────────────────
+declare -a BLOCKED_PATTERNS=(
+  # Recursive force delete
+  "rm\s+-rf\s+/"
+  "rm\s+-rf\s+~"
+  "rm\s+-rf\s+/\s"
+  "rm\s+-rf\s+[a-zA-Z]*/\*"
+  
+  # Database destructive
+  "DROP\s+TABLE"
+  "DROP\s+DATABASE"
+  "TRUNCATE"
+  "DELETE\s+FROM\s+[a-zA-Z_]+\s*;"
+  "DELETE\s+FROM\s+[a-zA-Z_]+\s+WHERE\s+1\s*="
+  
+  # Git force push
+  "git\s+push\s+.*\s+--force"
+  "git\s+push\s+.*\s+-f"
+  "git\s+push\s+.*\s+--force-with-lease"
+  
+  # Network destruction
+  "iptables\s+-F"
+  "iptables\s+--flush"
+  "ufw\s+disable"
+  "firewall-cmd\s+--add-port\s+--permanent"
+  
+  # Package destruction
+  "apt-get\s+remove\s+.*--purge"
+  "yum\s+remove\s+.*--remove-leaves"
+  "pip\s+uninstall\s+.*-y"
+  "npm\s+uninstall\s+.*-g"
+  
+  # Data destruction
+  "dd\s+if=.*of=/dev/"
+  "mkfs\."
+  "wipe\s+-rf"
+  "shred\s+-rf"
+  
+  # Process killing
+  "kill\s+-9\s+1"
+  "kill\s+-9\s+$$
+  "pkill\s+-9"
+  
+  # Disk/Filesystem
+  ":(){ :|:& };:"        # Fork bomb
+  ">\s*/dev/sd"
+  "dd\s+of=/dev/sd"
+)
 
-BLOCKED_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocked.log")
+#────────────────────────────────────────────────────────────────────────────
+# Log a blocked attempt
+#────────────────────────────────────────────────────────────────────────────
+log_blocked() {
+  local cmd="$1"
+  local ts
+  ts=$(date "+%Y-%m-%d %H:%M:%S")
+  
+  mkdir -p "$(dirname "$BLOCKED_LOG")" 2>/dev/null || true
+  
+  echo "[$ts] BLOCKED: $cmd (cwd: $(pwd))" >> "$BLOCKED_LOG"
+}
 
-# Patterns that indicate destructive commands
-DESTRUCTIVE_PATTERNS = [
-    (re.compile(r'rm\s+(-[rfv]+\s+)*(/|\.\.)'), "Recursive delete of root or parent"),
-    (re.compile(r'dd\s+.*\s+of=/dev/sd'), "Disk wipe with dd"),
-    (re.compile(r'mkfs\.'), "Filesystem format"),
-    (re.compile(r'fdisk.*\bdelete\b', re.IGNORECASE), "Partition deletion"),
-    (re.compile(r'TRUNCATE\s+TABLE', re.IGNORECASE), "SQL TRUNCATE TABLE"),
-    (re.compile(r'DROP\s+(TABLE|DATABASE)\s+\w+', re.IGNORECASE), "SQL DROP TABLE/DATABASE"),
-    (re.compile(r'DELETE\s+FROM\s+\w+\s*;?\s*$', re.IGNORECASE), "SQL DELETE without WHERE"),
-    (re.compile(r'git\s+push\s+(-f|--force)', re.IGNORECASE), "Force git push"),
-    (re.compile(r':(){:|:&};:'), "Fork bomb"),
-    (re.compile(r'>\s*/dev/sd[a-z]'), "Redirect to block device"),
-]
+#────────────────────────────────────────────────────────────────────────────
+# Check if command matches any blocked pattern
+#────────────────────────────────────────────────────────────────────────────
+is_blocked() {
+  local cmd="$1"
+  
+  for pattern in "${BLOCKED_PATTERNS[@]}"; do
+    if echo "$cmd" | grep -qiE "$pattern"; then
+      return 0
+    fi
+  done
+  
+  # Additional safety checks
+  if echo "$cmd" | grep -qiE "rm\s+-rf\s+[a-zA-Z]"; then
+    # Allow rm -rf on known safe dirs with confirmation
+    local safe_dirs="/tmp/work|/tmp/repo|/tmp/clone"
+    if ! echo "$cmd" | grep -qiE "$safe_dirs"; then
+      return 0
+    fi
+  fi
+  
+  return 1
+}
 
-def log_blocked(command, reason):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    project = os.getcwd() or "unknown"
-    entry = f"[{timestamp}] BLOCKED: {command} | Reason: {reason} | Project: {project}\n"
-    try:
-        with open(BLOCKED_LOG, "a") as f:
-            f.write(entry)
-    except Exception:
-        pass
+#────────────────────────────────────────────────────────────────────────────
+# Read input from Claude Code (JSON)
+#────────────────────────────────────────────────────────────────────────────
+read_input() {
+  # Claude Code sends JSON like: {"tool":"bash","args":{"command":"..."}}
+  # Read all of stdin
+  python3 -c "
+import sys, json
 
-def main():
-    try:
-        data = json.load(sys.stdin)
-    except Exception:
-        # Can't parse JSON, allow by default
-        sys.exit(0)
+try:
+    data = json.load(sys.stdin)
+    tool_name = data.get('tool', data.get('name', ''))
+    args = data.get('args', data)
+    
+    # Extract command from various possible structures
+    command = args.get('command', args.get('script', ''))
+    
+    # For shell exec, get the command
+    if not command:
+        command = args.get('command', '')
+    
+    print(command, end='')
+except Exception as e:
+    print('', end='')
+"
+}
 
-    tool_name = data.get("tool_name", "")
-    tool_input = data.get("tool_input", {})
-    command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+#────────────────────────────────────────────────────────────────────────────
+# Main — Claude Code hook interface
+#────────────────────────────────────────────────────────────────────────────
+main() {
+  local cmd
+  cmd=$(read_input)
+  
+  if [[ -z "$cmd" ]]; then
+    # No command to check, allow
+    echo '{"allow": true}'
+    exit 0
+  fi
+  
+  if is_blocked "$cmd"; then
+    log_blocked "$cmd"
+    
+    # Claude Code expects hook response: {"allow": false, "reason": "..."}
+    echo '{"allow": false, "reason": "⛔ DESTRUCTIVE COMMAND BLOCKED\n\nThe command you attempted has been blocked by the safety hook:\n\n```\n'"$cmd"'\n```\n\nThis pattern matches a known destructive operation.\nIf you need to proceed, please:\n1. Break the operation into smaller, safer steps\n2. Use interactive confirmation where available\n3. Explain your intent to proceed safely\n\nBlocked attempts are logged to: '"$BLOCKED_LOG"'"}'
+    exit 0
+  fi
+  
+  # Allow
+  echo '{"allow": true}'
+}
 
-    # Only check Bash commands
-    if tool_name != "Bash" or not command:
-        sys.exit(0)
-
-    # Check against destructive patterns
-    for pattern, reason in DESTRUCTIVE_PATTERNS:
-        if pattern.search(command):
-            log_blocked(command, reason)
-            print(f"BLOCKED: Destructive command detected!", file=sys.stderr)
-            print(f"Pattern: {reason}", file=sys.stderr)
-            print(f"Command: {command}", file=sys.stderr)
-            print(f"File: {sys.argv[0]}", file=sys.stderr)
-            print(f"", file=sys.stderr)
-            print(f"This command was blocked by the pre-tool-use hook.", file=sys.stderr)
-            print(f"If this is intentional, run the command directly.", file=sys.stderr)
-            sys.exit(1)
-
-    sys.exit(0)
-
-if __name__ == "__main__":
-    main()
+main

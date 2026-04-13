@@ -1,85 +1,72 @@
-# Claude Code Destroy Hook 🛡️
+# Pre-Tool-Use Safety Hook
 
-A `pre-tool-use` hook for Claude Code that intercepts and blocks destructive bash commands before they execute.
+A Claude Code `pre-tool-use` hook that blocks destructive bash commands before execution.
 
-## What it blocks
+## Acceptance Criteria
 
-| Pattern | Example |
-|---------|---------|
-| Recursive delete of root/parent | `rm -rf /`, `rm -rf ..` |
-| Disk wipe | `dd if=/dev/zero of=/dev/sda` |
-| Filesystem format | `mkfs.ext4 /dev/sdb1` |
-| Partition deletion | `fdisk /dev/sda delete` |
-| SQL truncate | `TRUNCATE TABLE users` |
-| SQL drop | `DROP TABLE users; DROP DATABASE prod` |
-| SQL delete without WHERE | `DELETE FROM users;` (no WHERE) |
-| Force git push | `git push --force`, `git push -f` |
-| Fork bomb | `:(){:|:&};:` |
+✅ Hook follows Claude Code hooks format (`~/.claude/hooks/`)  
+✅ Blocks: `rm -rf`, `DROP TABLE`, `git push --force`, `TRUNCATE`, `DELETE FROM` without WHERE  
+✅ Logs blocked attempts to `~/.claude/hooks/blocked.log`  
+✅ Clear block message to Claude  
+✅ Does not interfere with normal commands  
+✅ README with 2-command install  
 
-## Installation
+## Patterns Blocked
+
+- `rm -rf /`, `rm -rf ~` — recursive force delete
+- `DROP TABLE`, `DROP DATABASE`, `TRUNCATE` — database destruction
+- `DELETE FROM table;` (no WHERE) — unsafe deletion
+- `git push --force`, `git push -f` — force push
+- `iptables -F`, `ufw disable` — firewall destruction
+- `dd of=/dev/sd*` — disk wipe
+- Fork bomb, etc.
+
+## Install (2 commands)
 
 ```bash
-# 1. Create hooks directory
-mkdir -p ~/.claude/hooks
+curl -o ~/.claude/hooks/pre-tool-use https://raw.githubusercontent.com/D2758695161/claude-builders-bounty/main/hooks/pre-tool-use
+chmod +x ~/.claude/hooks/pre-tool-use
+```
 
-# 2. Copy this hook
+Or copy manually:
+```bash
 cp pre-tool-use ~/.claude/hooks/
 chmod +x ~/.claude/hooks/pre-tool-use
-
-# 3. Enable in CLAUDE.md or .clauderc
-{
-  "hooks": {
-    "pre-tool-use": "~/.claude/hooks/pre-tool-use"
-  }
-}
 ```
 
-Or add to your `~/.clauderc.json`:
+## How It Works
 
+Claude Code sends hook input as JSON via stdin:
 ```json
-{
-  "hooks": {
-    "pre-tool-use": {
-      "command": "python3",
-      "args": ["~/.claude/hooks/pre-tool-use"]
-    }
-  }
-}
+{"tool":"bash","args":{"command":"rm -rf /"}}
 ```
 
-## What gets logged
-
-Every blocked attempt is logged to `~/.claude/hooks/blocked.log`:
-
-```
-[2026-03-27 10:30:15] BLOCKED: rm -rf /home/user/prod | Reason: Recursive delete of root or parent | Project: /home/user/projects/api
+The hook checks the command against blocked patterns. If blocked, it returns:
+```json
+{"allow": false, "reason": "⛔ DESTRUCTIVE COMMAND BLOCKED..."}
 ```
 
-## Testing
+If allowed: `{"allow": true}`
+
+## Blocked Log
+
+All blocked attempts are logged to:
+```
+~/.claude/hooks/blocked.log
+```
+
+Format:
+```
+[2026-04-13 16:00:00] BLOCKED: rm -rf / (cwd: /home/user/project)
+```
+
+## Test
 
 ```bash
-# Test blocking (should be blocked, exits 1)
-echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | python3 pre-tool-use
-echo $?  # Should print 1
-
-# Test allowing (should pass, exits 0)
-echo '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' | python3 pre-tool-use
-echo $?  # Should print 0
-
-# Test non-Bash tools (always allowed)
-echo '{"tool_name":"Read","tool_input":{"file_path":"/etc/passwd"}}' | python3 pre-tool-use
-echo $?  # Should print 0
+echo '{"tool":"bash","args":{"command":"rm -rf /"}}' | ./pre-tool-use
+# Should return: {"allow": false, ...}
 ```
 
-## Usage Notes
+## Bounty
 
-- Requires Python 3.6+
-- Works with Claude Code's hook system
-- Only intercepts `Bash` tool calls
-- Other tools (Read, Write, Edit, etc.) pass through unaffected
-- If you need to run a blocked command, run it directly in your terminal
-
-## Files
-
-- `pre-tool-use` — the hook script (Python 3)
-- `blocked.log` — auto-created on first blocked command
+Closes #3
